@@ -7,7 +7,7 @@
  * for both Map and object key interation.
  * @private
  */
-export default function foreach(col, f) {
+export default function foreach<T>(col: Record<string, T> | Map<string, T> | null | undefined, f: (v: T, k: string) => void) {
   if (!col) {
     return;
   }

@@ -7,17 +7,34 @@
  */
 import Event from "./event";
 import foreach from "./foreach";
+import { Builder as IBuilder, EventFields, EventDynamicFields, LibhoneySend } from "./types";
 
 /**
  * Allows piecemeal creation of events.
  * @class
  */
-export default class Builder {
+export default class Builder implements IBuilder {
+  // The hostname for the Honeycomb API server to which to send events created through this builder.
+  public apiHost: string
+
+  // The name of the Honeycomb dataset to which to send these events.
+  public dataset: string
+
+  // The rate at which to sample events.
+  public sampleRate: number
+
+  // The Honeycomb authentication token.
+  public writeKey: string
+
+  private _fields: EventFields
+  private _dynFields: EventDynamicFields
+  private _libhoney: LibhoneySend
+
   /**
    * @constructor
    * @private
    */
-  constructor(libhoney, fields, dynFields) {
+  constructor(libhoney: LibhoneySend, fields?: EventFields, dynFields?: EventDynamicFields) {
     this._libhoney = libhoney;
     this._fields = Object.create(null);
     this._dynFields = Object.create(null);
@@ -74,7 +91,7 @@ export default class Builder {
    *   map.set("depth", 200);
    *   builder.add (map);
    */
-  add(data) {
+  add(data: EventFields) {
     foreach(data, (v, k) => this.addField(k, v));
     return this;
   }
@@ -87,7 +104,7 @@ export default class Builder {
    * @example
    *   builder.addField("component", "web");
    */
-  addField(name, val) {
+  addField(name: string, val: unknown) {
     if (val === undefined) {
       this._fields[name] = null;
       return this;
@@ -104,8 +121,9 @@ export default class Builder {
    * @example
    *   builder.addDynamicField("process_heapUsed", () => process.memoryUsage().heapUsed);
    */
-  addDynamicField(name, fn) {
+  addDynamicField(name: string, fn: () => unknown) {
     this._dynFields[name] = fn;
+    return this;
   }
 
   /**
@@ -118,7 +136,7 @@ export default class Builder {
    *     additionalField: value
    *   });
    */
-  sendNow(data) {
+  sendNow(data: EventFields) {
     let ev = this.newEvent();
     ev.add(data);
     ev.send();
@@ -132,7 +150,7 @@ export default class Builder {
    *   ev.addField("additionalField", value);
    *   ev.send();
    */
-  newEvent() {
+  newEvent(): Event {
     let ev = new Event(this._libhoney, this._fields, this._dynFields);
     ev.apiHost = this.apiHost;
     ev.writeKey = this.writeKey;
@@ -154,7 +172,7 @@ export default class Builder {
    *                                             process_heapUsed: () => process.memoryUsage().heapUsed
    *                                           });
    */
-  newBuilder(fields, dynFields) {
+  newBuilder(fields: EventFields, dynFields: EventDynamicFields) {
     let b = new Builder(this._libhoney, this._fields, this._dynFields);
 
     foreach(fields, (v, k) => b.addField(k, v));

@@ -8,16 +8,20 @@
  * @module
  */
 import superagent from "superagent";
-import urljoin from "urljoin";
+import urljoin from "url-join";
+
+import {
+  ValidatedEvent as IValidatedEvent,
+  Transmission as ITransmission,
+  TransmissionOptions,
+  TransmissionResponseHook,
+} from "./types";
 
 const USER_AGENT = "libhoney-js/<@LIBHONEY_JS_VERSION@>";
 
-const _global =
-  typeof window !== "undefined"
-    ? window
-    : typeof global !== "undefined"
-    ? global
-    : undefined;
+declare module process {
+  const browser: boolean | undefined
+}
 
 // how many events to collect in a batch
 const batchSizeTrigger = 50; // either when the eventQueue is > this length
@@ -34,14 +38,14 @@ const deadlineTimeoutMs = 60000;
 
 const emptyResponseCallback = function() {};
 
-const eachPromise = (arr, iteratorFn) =>
+const eachPromise = <T>(arr: T[], iteratorFn: (t: T) => void) =>
   arr.reduce((p, item) => {
     return p.then(() => {
       return iteratorFn(item);
     });
   }, Promise.resolve());
 
-const partition = (arr, keyfn, createfn, addfn) => {
+const partition = <T, S>(arr: T[], keyfn: (t: T) => string, createfn: (t: T) => S, addfn: (s: S, t: T) => void): Record<string, S> => {
   let result = Object.create(null);
   arr.forEach(v => {
     let key = keyfn(v);
@@ -54,8 +58,16 @@ const partition = (arr, keyfn, createfn, addfn) => {
   return result;
 };
 
+interface Batch {
+  apiHost: string
+  writeKey: string
+  dataset: string
+  events: IValidatedEvent[]
+}
+
 class BatchEndpointAggregator {
-  constructor(events) {
+  public batches: Record<string, Batch>
+  constructor(events: IValidatedEvent[]) {
     this.batches = partition(
       events,
       /* keyfn */
@@ -72,7 +84,7 @@ class BatchEndpointAggregator {
     );
   }
 
-  encodeBatchEvents(events) {
+  encodeBatchEvents(events: IValidatedEvent[]) {
     let first = true;
     let numEncoded = 0;
     let encodedEvents = events.reduce((acc, ev) => {
@@ -96,7 +108,18 @@ class BatchEndpointAggregator {
 /**
  * @private
  */
-export class ValidatedEvent {
+export class ValidatedEvent implements IValidatedEvent {
+  public readonly apiHost: string
+  public readonly writeKey: string
+  public readonly dataset: string
+  public readonly metadata: unknown
+  public readonly sampleRate: number
+
+  private timestamp: Date
+  private postData: unknown
+
+  public encodeError?: Error
+
   constructor({
     timestamp,
     apiHost,
@@ -105,6 +128,14 @@ export class ValidatedEvent {
     dataset,
     sampleRate,
     metadata
+  }: {
+    timestamp: Date;
+    apiHost: string;
+    postData: unknown;
+    writeKey: string;
+    dataset: string;
+    sampleRate: number;
+    metadata: unknown;
   }) {
     this.timestamp = timestamp;
     this.apiHost = apiHost;
@@ -116,9 +147,9 @@ export class ValidatedEvent {
   }
 
   toJSON() {
-    let json = {};
+    let json: Record<string, unknown> = {};
     if (this.timestamp) {
-      json.time = this.timestamp;
+      json.time = this.timestamp.toISOString();
     }
     if (this.sampleRate) {
       json.samplerate = this.sampleRate;
@@ -132,7 +163,7 @@ export class ValidatedEvent {
   toBrokenJSON() {
     let fields = [];
     if (this.timestamp) {
-      fields.push(`"time":${JSON.stringify(this.timestamp)}`);
+      fields.push(`"time":${this.timestamp.toISOString()}`);
     }
     if (this.sampleRate) {
       fields.push(`"samplerate":${JSON.stringify(this.sampleRate)}`);
@@ -144,19 +175,24 @@ export class ValidatedEvent {
   }
 }
 
-export class MockTransmission {
-  constructor(options) {
+export class MockTransmission implements ITransmission {
+  public constructorArg: unknown
+  public events: IValidatedEvent[]
+
+  constructor(options: unknown) {
     this.constructorArg = options;
     this.events = [];
   }
 
-  sendEvent(ev) {
+  sendEvent(ev: IValidatedEvent) {
     this.events.push(ev);
   }
 
-  sendPresampledEvent(ev) {
+  sendPresampledEvent(ev: IValidatedEvent) {
     this.events.push(ev);
   }
+
+  async flush() { }
 
   reset() {
     this.constructorArg = null;
@@ -164,47 +200,70 @@ export class MockTransmission {
   }
 }
 
+declare module console {
+  function log(m: string): void;
+}
+
 // deprecated.  Use ConsoleTransmission instead.
-export class WriterTransmission {
-  sendEvent(ev) {
+export class WriterTransmission implements ITransmission {
+  sendEvent(ev: IValidatedEvent) {
     console.log(JSON.stringify(ev.toBrokenJSON()));
   }
 
-  sendPresampledEvent(ev) {
+  sendPresampledEvent(ev: IValidatedEvent) {
     console.log(JSON.stringify(ev.toBrokenJSON()));
   }
+
+  async flush() { }
 }
 
 export class ConsoleTransmission {
-  sendEvent(ev) {
+  sendEvent(ev: IValidatedEvent) {
     console.log(JSON.stringify(ev));
   }
 
-  sendPresampledEvent(ev) {
+  sendPresampledEvent(ev: IValidatedEvent) {
     console.log(JSON.stringify(ev));
   }
+
+  async flush() { }
 }
 
-export class NullTransmission {
-  sendEvent(_ev) {}
-
-  sendPresampledEvent(_ev) {}
+export class NullTransmission implements ITransmission {
+  sendEvent(_ev: IValidatedEvent) {}
+  sendPresampledEvent(_ev: IValidatedEvent) {}
+  async flush() { }
 }
 
 /**
  * @private
  */
 export class Transmission {
-  constructor(options) {
+  private _responseCallback: TransmissionResponseHook
+  private _batchSizeTrigger: number
+  private _batchTimeTrigger: number
+  private _maxConcurrentBatches: number
+  private _pendingWorkCapacity: number
+  private _timeout: number
+  private _sendTimeoutId: ReturnType<typeof setTimeout> | undefined
+  private _eventQueue: IValidatedEvent[]
+  private _batchCount: number
+  private _userAgentAddition: string
+  private _proxy: string | undefined
+  private _randomFn: () => number
+  private flushCallback: (() => void) | null
+
+  constructor(options: TransmissionOptions) {
     this._responseCallback = emptyResponseCallback;
     this._batchSizeTrigger = batchSizeTrigger;
     this._batchTimeTrigger = batchTimeTrigger;
     this._maxConcurrentBatches = maxConcurrentBatches;
     this._pendingWorkCapacity = pendingWorkCapacity;
     this._timeout = deadlineTimeoutMs;
-    this._sendTimeoutId = -1;
+    this._sendTimeoutId = undefined;
     this._eventQueue = [];
     this._batchCount = 0;
+    this.flushCallback = null;
 
     if (typeof options.responseCallback === "function") {
       this._responseCallback = options.responseCallback;
@@ -233,7 +292,7 @@ export class Transmission {
     this._randomFn = Math.random;
   }
 
-  _droppedCallback(ev, reason) {
+  _droppedCallback(ev: IValidatedEvent, reason: string) {
     this._responseCallback([
       {
         metadata: ev.metadata,
@@ -242,7 +301,7 @@ export class Transmission {
     ]);
   }
 
-  sendEvent(ev) {
+  sendEvent(ev: IValidatedEvent) {
     // bail early if we aren't sampling this event
     if (!this._shouldSendEvent(ev)) {
       this._droppedCallback(ev, "event dropped due to sampling");
@@ -252,7 +311,7 @@ export class Transmission {
     this.sendPresampledEvent(ev);
   }
 
-  sendPresampledEvent(ev) {
+  sendPresampledEvent(ev: IValidatedEvent) {
     if (this._eventQueue.length >= this._pendingWorkCapacity) {
       this._droppedCallback(ev, "queue overflow");
       return;
@@ -265,12 +324,13 @@ export class Transmission {
     }
   }
 
-  flush() {
+  flush(): Promise<void> {
     if (this._eventQueue.length === 0 && this._batchCount === 0) {
       // we're not currently waiting on anything, we're done!
       return Promise.resolve();
     }
 
+    // There's a bug here. Calling flush() twice while a batch is inflight will cause the first call to hang.
     return new Promise(resolve => {
       this.flushCallback = () => {
         this.flushCallback = null;
@@ -286,6 +346,7 @@ export class Transmission {
       return;
     }
 
+    // We won't try to _sendBatch again due to timeout until the current batch count drops below max.
     this._clearSendTimeout();
 
     this._batchCount++;
@@ -317,17 +378,13 @@ export class Transmission {
       let url = urljoin(batch.apiHost, "/1/batch", batch.dataset);
       let postReq = superagent.post(url);
 
-      let reqPromise;
-      if (process.env.LIBHONEY_TARGET === "browser") {
+      let reqPromise: Promise<{req: typeof postReq}>;
+      if (process.browser) {
         reqPromise = Promise.resolve({ req: postReq });
       } else {
-        reqPromise = Promise.resolve(
-          this._proxy
-            ? import("superagent-proxy").then(({ default: proxy }) => ({
-                req: proxy(postReq, this._proxy)
-              }))
-            : { req: postReq }
-        );
+        reqPromise = this._proxy ?
+            import("superagent-proxy").then(({ default: proxy }: any) => ({ req: proxy(postReq, this._proxy) })) :
+            Promise.resolve({ req: postReq });
       }
       let { encoded, numEncoded } = batchAgg.encodeBatchEvents(batch.events);
       return reqPromise.then(
@@ -355,7 +412,7 @@ export class Transmission {
             req
               .set("X-Honeycomb-Team", batch.writeKey)
               .set(
-                process.env.LIBHONEY_TARGET === "browser"
+                process.browser
                   ? "X-Honeycomb-UserAgent"
                   : "User-Agent",
                 userAgent
@@ -411,7 +468,7 @@ export class Transmission {
       .catch(finishBatch);
   }
 
-  _shouldSendEvent(ev) {
+  _shouldSendEvent(ev: IValidatedEvent) {
     let { sampleRate } = ev;
     if (sampleRate <= 1) {
       return true;
@@ -420,8 +477,8 @@ export class Transmission {
   }
 
   _ensureSendTimeout() {
-    if (this._sendTimeoutId === -1) {
-      this._sendTimeoutId = _global.setTimeout(
+    if (this._sendTimeoutId === undefined) {
+      this._sendTimeoutId = setTimeout(
         () => this._sendBatch(),
         this._batchTimeTrigger
       );
@@ -429,9 +486,9 @@ export class Transmission {
   }
 
   _clearSendTimeout() {
-    if (this._sendTimeoutId !== -1) {
-      _global.clearTimeout(this._sendTimeoutId);
-      this._sendTimeoutId = -1;
+    if (this._sendTimeoutId !== undefined) {
+      clearTimeout(this._sendTimeoutId);
+      this._sendTimeoutId = undefined;
     }
   }
 }

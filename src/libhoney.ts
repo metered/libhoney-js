@@ -12,11 +12,25 @@ import {
   NullTransmission,
   Transmission,
   ValidatedEvent,
-  WriterTransmission
+  WriterTransmission,
 } from "./transmission";
 import Builder from "./builder";
 
 import { EventEmitter } from "events";
+
+import {
+  Required,
+  LibhoneySend,
+  LibhoneyUserOptions,
+  TransmissionOptions,
+  TransmissionType,
+  Transmission as ITransmission,
+  EventFields,
+  EventDynamicFields,
+  Event,
+  ValidatedEvent as IValidatedEvent,
+  TransmissionResponse,
+} from "./types";
 
 const defaults = Object.freeze({
   apiHost: "https://api.honeycomb.io/",
@@ -63,13 +77,21 @@ const defaults = Object.freeze({
   userAgentAddition: ""
 });
 
+type LibhoneyOptions = Required<Omit<LibhoneyUserOptions, 'proxy'>> & Pick<LibhoneyUserOptions, 'proxy'>
+
 /**
  * libhoney aims to make it as easy as possible to create events and send them on into Honeycomb.
  *
  * See https://honeycomb.io/docs for background on this library.
  * @class
  */
-export default class Libhoney extends EventEmitter {
+export default class Libhoney extends EventEmitter implements LibhoneySend {
+  private _options: LibhoneyOptions;
+  private _builder: Builder;
+  private _usable: boolean;
+  private _transmission: ITransmission | null;
+  private _responseQueue: unknown[];
+
   /**
    * Constructs a libhoney context in order to configure default behavior,
    * though each of its members (`apiHost`, `writeKey`, `dataset`, and
@@ -97,7 +119,7 @@ export default class Libhoney extends EventEmitter {
    *   // disabled: true // uncomment when testing or in development
    * });
    */
-  constructor(opts) {
+  constructor(opts: LibhoneyUserOptions) {
     super();
     this._options = Object.assign(
       { responseCallback: this._responseCallback.bind(this) },
@@ -119,7 +141,7 @@ export default class Libhoney extends EventEmitter {
     this._responseQueue = [];
   }
 
-  _responseCallback(responses) {
+  _responseCallback(responses: TransmissionResponse[]) {
     const [queue, limit] = [
       this._responseQueue,
       this._options.maxResponseQueueSize
@@ -233,9 +255,9 @@ export default class Libhoney extends EventEmitter {
    * actually be sent to Honeycomb.
    * @private
    */
-  sendEvent(event) {
+  sendEvent(event: Event) {
     let transmitEvent = this.validateEvent(event);
-    if (!transmitEvent) {
+    if (!transmitEvent || !this._transmission) {
       return;
     }
 
@@ -257,9 +279,9 @@ export default class Libhoney extends EventEmitter {
    * are sent to Honeycomb.
    * @private
    */
-  sendPresampledEvent(event) {
+  sendPresampledEvent(event: Event) {
     let transmitEvent = this.validateEvent(event);
-    if (!transmitEvent) {
+    if (!transmitEvent || !this._transmission) {
       return;
     }
 
@@ -273,7 +295,7 @@ export default class Libhoney extends EventEmitter {
    *                   the event was invalid in some way or unable to be sent.
    * @private
    */
-  validateEvent(event) {
+  validateEvent(event: Event): IValidatedEvent | null {
     if (!this._usable) return null;
 
     let timestamp = event.timestamp || Date.now();
@@ -343,7 +365,7 @@ export default class Libhoney extends EventEmitter {
    *   map.set("env", "staging");
    *   honey.add (map);
    */
-  add(data) {
+  add(data: EventFields) {
     this._builder.add(data);
     return this;
   }
@@ -356,7 +378,7 @@ export default class Libhoney extends EventEmitter {
    * @example
    *   honey.addField("build_id", "a6cc38a1");
    */
-  addField(name, val) {
+  addField(name: string, val: unknown) {
     this._builder.addField(name, val);
     return this;
   }
@@ -369,7 +391,7 @@ export default class Libhoney extends EventEmitter {
    * @example
    *   honey.addDynamicField("process_heapUsed", () => process.memoryUsage().heapUsed);
    */
-  addDynamicField(name, fn) {
+  addDynamicField(name: string, fn: () => unknown) {
     this._builder.addDynamicField(name, fn);
     return this;
   }
@@ -388,7 +410,7 @@ export default class Libhoney extends EventEmitter {
    *   map.set("httpStatusCode", 200);
    *   honey.sendNow (map);
    */
-  sendNow(data) {
+  sendNow(data: EventFields) {
     return this._builder.sendNow(data);
   }
 
@@ -417,7 +439,7 @@ export default class Libhoney extends EventEmitter {
    *                                    process_heapUsed: () => process.memoryUsage().heapUsed
    *                                  });
    */
-  newBuilder(fields, dynFields) {
+  newBuilder(fields: EventFields, dynFields: EventDynamicFields) {
     return this._builder.newBuilder(fields, dynFields);
   }
 
@@ -427,7 +449,7 @@ export default class Libhoney extends EventEmitter {
    * after a call to flush will not be waited on.
    * @returns {Promise} a promise that will resolve when all currently enqueued events/batches are sent.
    */
-  flush() {
+  async flush() {
     const transmission = this._transmission;
 
     this._transmission = getAndInitTransmission(
@@ -435,11 +457,18 @@ export default class Libhoney extends EventEmitter {
       this._options
     );
 
-    return transmission.flush();
+    if (transmission) {
+      await transmission.flush()
+    }
   }
 }
 
-const getTransmissionClass = transmissionClassName => {
+declare module console {
+  function warn(m: string): void
+  function error(m: string): void
+}
+
+const getTransmissionClass = (transmissionClassName: TransmissionType) => {
   switch (transmissionClassName) {
     case "base":
       return Transmission;
@@ -466,7 +495,7 @@ const getTransmissionClass = transmissionClassName => {
   }
 };
 
-function getAndInitTransmission(transmission, options) {
+function getAndInitTransmission(transmission: TransmissionType | typeof Transmission, options: TransmissionOptions): ITransmission | null {
   if (options.disabled) {
     return null;
   }
@@ -486,7 +515,7 @@ function getAndInitTransmission(transmission, options) {
     if (transmission === Transmission) {
       throw new Error(
         "unable to initialize base transmission implementation.",
-        initialisationError
+        // initialisationError
       );
     }
 
@@ -498,7 +527,7 @@ function getAndInitTransmission(transmission, options) {
     } catch (fallbackInitialisationError) {
       throw new Error(
         "unable to initialize base transmission implementation.",
-        fallbackInitialisationError
+        // fallbackInitialisationError
       );
     }
   }
@@ -513,7 +542,7 @@ function getAndInitTransmission(transmission, options) {
    * 
    * Modifies and returns arr1.
    */
-   function concatWithMaxLimit(arr1, arr2, limit) {
+   function concatWithMaxLimit<T>(arr1: T[], arr2: T[], limit: number) {
   // if queue is full or somehow over the max
   if (arr1.length >= limit) {
     //return up to the max length

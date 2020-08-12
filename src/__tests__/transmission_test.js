@@ -580,7 +580,7 @@ describe("base transmission", () => {
 
   it("should use X-Honeycomb-UserAgent in browser", done => {
     // terrible hack to get our "are we running in node" check to return false
-    process.env.LIBHONEY_TARGET = "browser";
+    process.browser = true;
 
     let transmission = new Transmission({
       batchTimeTrigger: 10000, // larger than the mocha timeout
@@ -598,7 +598,7 @@ describe("base transmission", () => {
 
       done();
 
-      process.env.LIBHONEY_TARGET = "";
+      process.browser = undefined;
 
       return {};
     });

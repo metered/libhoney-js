@@ -7,16 +7,39 @@
  */
 import foreach from "./foreach";
 
+import { EventFields, EventDynamicFields, Event as IEvent, LibhoneySend } from "./types";
+
 /**
  * Represents an individual event to send to Honeycomb.
  * @class
  */
-export default class Event {
+export default class Event implements IEvent {
+  // If set, specifies the timestamp associated with this event.
+  public timestamp?: Date | null;
+
+  // The hostname for the Honeycomb API server to which to send this event.
+  public apiHost: string
+
+  public data: EventFields
+
+  // The name of the Honeycomb dataset to which to send this event.
+  public dataset: string
+
+  // The rate at which to sample this event.
+  public sampleRate: number
+
+  // The Honeycomb authentication token for this event.
+  public writeKey: string
+
+  public metadata: unknown | null
+
+  private _libhoney: LibhoneySend
+  
   /**
    * @constructor
    * private
    */
-  constructor(libhoney, fields, dynFields) {
+  constructor(libhoney: LibhoneySend, fields: EventFields, dynFields: EventDynamicFields) {
     this.data = Object.create(null);
     this.metadata = null;
 
@@ -81,7 +104,7 @@ export default class Event {
    *   event.add (map);
    *   event.send();
    */
-  add(data) {
+  add(data: EventFields) {
     foreach(data, (v, k) => this.addField(k, v));
     return this;
   }
@@ -96,7 +119,7 @@ export default class Event {
    *     .addField("responseTime_ms", 100)
    *     .send();
    */
-  addField(name, val) {
+  addField(name: string, val: unknown) {
     if (val === undefined) {
       this.data[name] = null;
       return this;
@@ -110,7 +133,7 @@ export default class Event {
    * @param {any} md
    * @returns {Event} this event.
    */
-  addMetadata(md) {
+  addMetadata(md: unknown) {
     this.metadata = md;
     return this;
   }

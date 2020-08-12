@@ -1,0 +1,23 @@
+package(default_visibility = ["//visibility:public"])
+
+load("@npm//@bazel/typescript:index.bzl", "ts_library")
+
+ts_library(
+  name = "libhoney-js",
+  module_name = "libhoney",
+  module_root = "src/index.d.ts",
+  srcs = glob([
+    "src/**/*.ts",
+  ]),
+  deps = [
+    "@npm//@types/url-join",
+    "@npm//url-join",
+    "@npm//@types/node",
+    "@npm//superagent",
+    "@npm//superagent-proxy",
+    "@npm//@types/superagent",
+    "@npm//@types/superagent-proxy",
+    "@npm//@types/events",
+    "@npm//events",
+  ],
+)
