@@ -7,7 +7,7 @@
 /**
  * @module
  */
-import superagent from "superagent";
+import superagent, { SuperAgentRequest } from "superagent";
 import urljoin from "url-join";
 
 import {
@@ -249,7 +249,8 @@ export class Transmission {
   private _eventQueue: IValidatedEvent[]
   private _batchCount: number
   private _userAgentAddition: string
-  private _proxy: string | undefined
+  private _proxy: (req: superagent.SuperAgentRequest) => superagent.SuperAgentRequest // async (req) => (await import("superagent-proxy")).default(postReq, "...")
+
   private _randomFn: () => number
   private flushCallback: (() => void) | null
 
@@ -263,6 +264,7 @@ export class Transmission {
     this._sendTimeoutId = undefined;
     this._eventQueue = [];
     this._batchCount = 0;
+    this._proxy = (req: superagent.SuperAgentRequest) => req
     this.flushCallback = null;
 
     if (typeof options.responseCallback === "function") {
@@ -285,7 +287,9 @@ export class Transmission {
     }
 
     this._userAgentAddition = options.userAgentAddition || "";
-    this._proxy = options.proxy;
+    if (typeof options.proxy === "function") {
+      this._proxy = options.proxy;
+    }
 
     // Included for testing; to stub out randomness and verify that an event
     // was dropped.
@@ -382,9 +386,7 @@ export class Transmission {
       if (process.browser) {
         reqPromise = Promise.resolve({ req: postReq });
       } else {
-        reqPromise = this._proxy ?
-            import("superagent-proxy").then(({ default: proxy }: any) => ({ req: proxy(postReq, this._proxy) })) :
-            Promise.resolve({ req: postReq });
+        reqPromise = Promise.resolve({ req: this._proxy(postReq) })
       }
       let { encoded, numEncoded } = batchAgg.encodeBatchEvents(batch.events);
       return reqPromise.then(

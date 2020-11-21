@@ -1,3 +1,5 @@
+import { SuperAgentRequest } from "superagent";
+
 export interface TransmissionResponse {
   status_code?: number
   metadata: unknown | null
@@ -36,7 +38,7 @@ export interface TransmissionOptions {
 
   userAgentAddition?: string
 
-  proxy?: string
+  proxy?: (req: SuperAgentRequest) => SuperAgentRequest
 }
 
 export type TransmissionType = "base" | "mock" | "null" | "worker" | "writer" | "console";
