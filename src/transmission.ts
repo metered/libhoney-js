@@ -17,7 +17,7 @@ import {
   TransmissionResponseHook,
 } from "./types";
 
-const USER_AGENT = "libhoney-js/<@LIBHONEY_JS_VERSION@>";
+const USER_AGENT = "libhoney-js/0.0.0";
 
 declare module process {
   const browser: boolean | undefined
